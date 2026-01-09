@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Authentication Fix Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .test-section {
+            background: white;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .test-button {
+            background: #3B82F6;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        .test-button:hover {
+            background: #2563EB;
+        }
+        .clear-button {
+            background: #EF4444;
+        }
+        .clear-button:hover {
+            background: #DC2626;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .success {
+            background: #D1FAE5;
+            color: #065F46;
+            border: 1px solid #A7F3D0;
+        }
+        .error {
+            background: #FEE2E2;
+            color: #991B1B;
+            border: 1px solid #FECACA;
+        }
+        .info {
+            background: #DBEAFE;
+            color: #1E40AF;
+            border: 1px solid #BFDBFE;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔧 Authentication Fix Test</h1>
+    <p>This page helps test the authentication fix to ensure the login page appears first instead of auto-logging in mock users.</p>
+
+    <div class="test-section">
+        <h2>Current Authentication Status</h2>
+        <div id="auth-status" class="status info">Checking...</div>
+        <button class="test-button" onclick="checkAuthStatus()">Refresh Status</button>
+        <button class="test-button clear-button" onclick="clearAllAuth()">Clear All Auth Data</button>
+    </div>
+
+    <div class="test-section">
+        <h2>Test Steps</h2>
+        <ol>
+            <li>Click "Clear All Auth Data" to remove any existing authentication</li>
+            <li>Open the main application in a new tab</li>
+            <li>Verify that the login page appears (not the HOD dashboard)</li>
+            <li>Login with valid credentials</li>
+            <li>Verify that you're redirected to the appropriate dashboard</li>
+        </ol>
+    </div>
+
+    <div class="test-section">
+        <h2>Expected Behavior</h2>
+        <ul>
+            <li>✅ Login page should appear first (not HOD dashboard)</li>
+            <li>✅ No mock user should be auto-logged in</li>
+            <li>✅ After login, user should be redirected to correct dashboard</li>
+            <li>✅ Refresh should maintain login state</li>
+        </ul>
+    </div>
+
+    <div class="test-section">
+        <h2>LocalStorage Contents</h2>
+        <div id="localStorage-contents"></div>
+        <button class="test-button" onclick="showLocalStorage()">Show LocalStorage</button>
+    </div>
+
+    <script>
+        function checkAuthStatus() {
+            const authToken = localStorage.getItem('nevostack_auth');
+            const accessToken = localStorage.getItem('accessToken');
+            const user = localStorage.getItem('nevostack_user');
+            
+            let status = '';
+            let className = 'info';
+            
+            if (authToken === 'true' && accessToken) {
+                status = '✅ User is authenticated';
+                className = 'success';
+            } else if (user && !authToken) {
+                status = '⚠️ User data found but no valid authentication';
+                className = 'error';
+            } else {
+                status = '❌ No authentication found - should show login page';
+                className = 'info';
+            }
+            
+            document.getElementById('auth-status').innerHTML = status;
+            document.getElementById('auth-status').className = `status ${className}`;
+        }
+
+        function clearAllAuth() {
+            localStorage.removeItem('nevostack_auth');
+            localStorage.removeItem('nevostack_user');
+            localStorage.removeItem('user');
+            localStorage.removeItem('accessToken');
+            localStorage.removeItem('refreshToken');
+            localStorage.removeItem('device');
+            localStorage.removeItem('deviceId');
+            
+            document.getElementById('auth-status').innerHTML = '🧹 All authentication data cleared';
+            document.getElementById('auth-status').className = 'status success';
+            
+            showLocalStorage();
+        }
+
+        function showLocalStorage() {
+            const contents = document.getElementById('localStorage-contents');
+            let html = '<h3>Current LocalStorage:</h3><ul>';
+            
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                const value = localStorage.getItem(key);
+                html += `<li><strong>${key}:</strong> ${value}</li>`;
+            }
+            
+            html += '</ul>';
+            contents.innerHTML = html;
+        }
+
+        // Initial check
+        checkAuthStatus();
+        showLocalStorage();
+    </script>
+</body>
+</html>
