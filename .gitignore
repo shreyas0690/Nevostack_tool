@@ -29,3 +29,18 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Documentation/Guide files (root level only)
+/*.md
+!README.md
+
+# Test files
+test-*.js
+test-*.html
+*.html
+copy.js
+clear-auth-data.js
+add-plans-helper.html
+
+# Misc files
+-
