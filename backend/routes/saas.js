@@ -557,12 +557,57 @@ router.get('/companies', requireSaaSSuperAdmin, async (req, res) => {
     const sort = {};
     sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
 
-    // Get companies with user counts
+    // Get companies
     const companies = await Company.find(filter)
       .sort(sort)
       .skip(skip)
       .limit(parseInt(limit))
       .lean();
+
+    // Get company IDs for aggregation
+    const companyIds = companies.map(c => c._id);
+
+    // Optimized: Fetch all stats in parallel aggregations instead of loop
+    const [
+      userCounts,
+      deptCounts,
+      taskCounts,
+      meetingCounts,
+      leaveCounts
+    ] = await Promise.all([
+      // User counts
+      User.aggregate([
+        { $match: { companyId: { $in: companyIds } } },
+        { $group: { _id: '$companyId', count: { $sum: 1 } } }
+      ]),
+      // Department counts
+      mongoose.connection.db.collection('departments').aggregate([
+        { $match: { companyId: { $in: companyIds } } },
+        { $group: { _id: '$companyId', count: { $sum: 1 } } }
+      ]).toArray(),
+      // Task counts
+      mongoose.connection.db.collection('tasks').aggregate([
+        { $match: { companyId: { $in: companyIds } } },
+        { $group: { _id: '$companyId', count: { $sum: 1 } } }
+      ]).toArray(),
+      // Meeting counts
+      mongoose.connection.db.collection('meetings').aggregate([
+        { $match: { companyId: { $in: companyIds } } },
+        { $group: { _id: '$companyId', count: { $sum: 1 } } }
+      ]).toArray(),
+      // Leave counts
+      mongoose.connection.db.collection('leaves').aggregate([
+        { $match: { companyId: { $in: companyIds } } },
+        { $group: { _id: '$companyId', count: { $sum: 1 } } }
+      ]).toArray()
+    ]);
+
+    // Create maps for quick lookup
+    const userCountMap = new Map(userCounts.map(s => [s._id.toString(), s.count]));
+    const deptCountMap = new Map(deptCounts.map(s => [s._id.toString(), s.count]));
+    const taskCountMap = new Map(taskCounts.map(s => [s._id.toString(), s.count]));
+    const meetingCountMap = new Map(meetingCounts.map(s => [s._id.toString(), s.count]));
+    const leaveCountMap = new Map(leaveCounts.map(s => [s._id.toString(), s.count]));
 
     // Debug: Log billing cycle data
     console.log('🔍 Backend - Company billing cycle data:', companies.map(c => ({
@@ -571,100 +616,75 @@ router.get('/companies', requireSaaSSuperAdmin, async (req, res) => {
       subscription: c.subscription
     })));
 
-    // Get detailed statistics for each company
-    const companiesWithStats = await Promise.all(
-      companies.map(async (company) => {
-        // Get user count
-        const userCount = await User.countDocuments({ companyId: company._id });
+    // Transform company data
+    const companiesWithStats = companies.map(company => {
+      const cid = company._id.toString();
 
-        // Get department count
-        const departmentCount = await mongoose.connection.db.collection('departments').countDocuments({ companyId: company._id });
+      const userCount = userCountMap.get(cid) || 0;
+      const departmentCount = deptCountMap.get(cid) || 0;
+      const taskCount = taskCountMap.get(cid) || 0;
+      const meetingCount = meetingCountMap.get(cid) || 0;
+      const leaveCount = leaveCountMap.get(cid) || 0;
 
-        // Get task count
-        const taskCount = await mongoose.connection.db.collection('tasks').countDocuments({ companyId: company._id });
+      // Get storage used (if available, otherwise use a default calculation)
+      const storageUsed = company.stats?.storageUsed || (userCount * 0.5); // Rough estimate: 0.5GB per user
 
-        // Get meeting count
-        const meetingCount = await mongoose.connection.db.collection('meetings').countDocuments({ companyId: company._id });
-
-        // Get leave request count
-        const leaveCount = await mongoose.connection.db.collection('leaves').countDocuments({ companyId: company._id });
-
-        // Get storage used (if available, otherwise use a default calculation)
-        const storageUsed = company.stats?.storageUsed || (userCount * 0.5); // Rough estimate: 0.5GB per user
-
-        // Transform company data to match frontend expectations with real subscription data
-        return {
-          _id: company._id,
-          companyName: company.name,
-          domain: company.domain,
-          email: company.email,
-          phone: company.phone || '',
-          industry: company.industry || 'Technology',
-          employeeCount: company.employeeCount || '1-50',
-          address: company.address || {},
-          status: company.status,
-          // Real subscription data
-          subscriptionPlan: company.subscription?.planName || 'Free',
-          subscriptionStatus: company.subscription?.status || 'trial',
-          subscriptionAmount: company.subscription?.amount || 0,
-          billingCycle: company.subscription?.billingCycle || 'monthly',
-          nextBillingDate: company.subscription?.nextBillingDate || null,
-          paymentMethod: company.subscription?.paymentMethod || 'N/A',
-          autoRenewal: company.subscription?.autoRenewal || false,
-          // Real usage data
-          currentUsers: userCount,
+      // Transform data
+      return {
+        _id: company._id,
+        companyName: company.name,
+        domain: company.domain,
+        email: company.email,
+        phone: company.phone || '',
+        industry: company.industry || 'Technology',
+        employeeCount: company.employeeCount || '1-50',
+        address: company.address || {},
+        status: company.status,
+        // Real subscription data
+        subscriptionPlan: company.subscription?.planName || 'Free',
+        subscriptionStatus: company.subscription?.status || 'trial',
+        subscriptionAmount: company.subscription?.amount || 0,
+        billingCycle: company.subscription?.billingCycle || 'monthly',
+        nextBillingDate: company.subscription?.nextBillingDate || null,
+        paymentMethod: company.subscription?.paymentMethod || 'N/A',
+        autoRenewal: company.subscription?.autoRenewal || false,
+        // Real usage data
+        currentUsers: userCount,
+        maxUsers: company.limits?.maxUsers || 100,
+        totalDepartments: departmentCount,
+        totalTasks: taskCount,
+        totalMeetings: meetingCount,
+        totalLeaves: leaveCount,
+        storageUsed: Math.round(storageUsed * 100) / 100,
+        // Usage stats for frontend
+        usageStats: {
+          users: userCount,
+          departments: departmentCount,
+          storageUsed: Math.round(storageUsed * 100) / 100
+        },
+        // Plan limits for frontend
+        planLimits: {
           maxUsers: company.limits?.maxUsers || 100,
-          totalDepartments: departmentCount,
-          totalTasks: taskCount,
-          totalMeetings: meetingCount,
-          totalLeaves: leaveCount,
-          storageUsed: Math.round(storageUsed * 100) / 100,
-          // Usage stats for frontend
-          usageStats: {
-            users: userCount,
-            departments: departmentCount,
-            storageUsed: Math.round(storageUsed * 100) / 100
-          },
-          // Plan limits for frontend
-          planLimits: {
-            maxUsers: company.limits?.maxUsers || 100,
-            maxDepartments: company.limits?.maxDepartments || -1,
-            storageGB: company.limits?.storageGB || -1
-          },
-          // Real revenue data
-          revenue: company.subscription?.amount || 0,
-          totalPaid: company.billing?.totalPaid || 0,
-          lastPaymentDate: company.billing?.lastPaymentDate || null,
-          lastLogin: company.stats?.lastActivity || company.updatedAt,
-          createdAt: company.createdAt,
-          // Additional subscription details
-          subscriptionStartDate: company.subscription?.startDate || company.createdAt,
-          subscriptionEndDate: company.subscription?.endDate || company.subscription?.trialEndsAt,
-          trialEndsAt: company.subscription?.trialEndsAt || null
-        };
-      })
-    );
+          maxDepartments: company.limits?.maxDepartments || -1,
+          storageGB: company.limits?.storageGB || -1
+        },
+        // Real revenue data
+        revenue: company.subscription?.amount || 0,
+        totalPaid: company.billing?.totalPaid || 0,
+        lastPaymentDate: company.billing?.lastPaymentDate || null,
+        lastLogin: company.stats?.lastActivity || company.updatedAt,
+        createdAt: company.createdAt,
+        // Additional subscription details
+        subscriptionStartDate: company.subscription?.startDate || company.createdAt,
+        subscriptionEndDate: company.subscription?.endDate || company.subscription?.trialEndsAt,
+        trialEndsAt: company.subscription?.trialEndsAt || null
+      };
+    });
 
     // Get total count for pagination
     const totalCompanies = await Company.countDocuments(filter);
 
     console.log(`📊 SaaS Companies API - Found ${companiesWithStats.length} companies, Total: ${totalCompanies}`);
-    console.log('🏢 First company sample:', companiesWithStats[0] ? {
-      name: companiesWithStats[0].companyName,
-      plan: companiesWithStats[0].subscriptionPlan,
-      status: companiesWithStats[0].subscriptionStatus,
-      amount: companiesWithStats[0].subscriptionAmount,
-      billingCycle: companiesWithStats[0].billingCycle,
-      nextBillingDate: companiesWithStats[0].nextBillingDate,
-      paymentMethod: companiesWithStats[0].paymentMethod,
-      users: companiesWithStats[0].currentUsers,
-      departments: companiesWithStats[0].totalDepartments,
-      storageUsed: companiesWithStats[0].storageUsed,
-      usageStats: companiesWithStats[0].usageStats,
-      planLimits: companiesWithStats[0].planLimits,
-      revenue: companiesWithStats[0].revenue,
-      totalPaid: companiesWithStats[0].totalPaid
-    } : 'No companies found');
 
     const responseData = {
       success: true,
@@ -679,12 +699,6 @@ router.get('/companies', requireSaaSSuperAdmin, async (req, res) => {
         }
       }
     };
-
-    console.log('✅ SaaS Companies API - Sending response with data structure:', {
-      success: responseData.success,
-      companiesCount: responseData.data.companies.length,
-      pagination: responseData.data.pagination
-    });
 
     // Set cache headers to prevent 304 caching issues
     res.set({
