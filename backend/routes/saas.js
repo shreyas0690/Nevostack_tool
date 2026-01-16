@@ -1034,61 +1034,71 @@ router.get('/activity', requireSaaSSuperAdmin, async (req, res) => {
   }
 });
 
-// Get Monthly Trends Data (Last 1 Month - Daily Data)
+// Get Monthly Trends Data (Last 1 Month - Daily Data) - OPTIMIZED
 router.get('/monthly-trends', requireSaaSSuperAdmin, async (req, res) => {
   try {
     console.log('📈 Monthly trends requested by:', req.user.email);
 
     const now = new Date();
-    const monthlyTrends = [];
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    thirtyDaysAgo.setHours(0, 0, 0, 0);
 
-    // Get daily data for the last 30 days
-    for (let i = 29; i >= 0; i--) {
-      const dayDate = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
-      const dayStart = new Date(dayDate);
-      dayStart.setHours(0, 0, 0, 0);
-      const dayEnd = new Date(dayDate);
-      dayEnd.setHours(23, 59, 59, 999);
-
-      // Count new companies created on this day
-      const companiesCount = await Company.countDocuments({
-        createdAt: { $gte: dayStart, $lte: dayEnd }
-      });
-
-      // Count new users created on this day
-      const usersCount = await User.countDocuments({
-        createdAt: { $gte: dayStart, $lte: dayEnd }
-      });
-
-      // Calculate real revenue for the day from actual payments
-      const dailyRevenueData = await Payment.aggregate([
-        {
-          $match: {
-            status: 'completed',
-            createdAt: { $gte: dayStart, $lte: dayEnd }
-          }
-        },
+    // Optimized: Use aggregation to get all data in 3 queries instead of 90
+    const [companiesByDay, usersByDay, revenueByDay] = await Promise.all([
+      // Companies created per day
+      Company.aggregate([
+        { $match: { createdAt: { $gte: thirtyDaysAgo } } },
         {
           $group: {
-            _id: null,
-            dailyRevenue: { $sum: '$amount' }
+            _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+            count: { $sum: 1 }
           }
         }
-      ]);
-      const dailyRevenue = dailyRevenueData[0]?.dailyRevenue || 0;
+      ]),
+      // Users created per day
+      User.aggregate([
+        { $match: { createdAt: { $gte: thirtyDaysAgo } } },
+        {
+          $group: {
+            _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+            count: { $sum: 1 }
+          }
+        }
+      ]),
+      // Revenue per day
+      Payment.aggregate([
+        { $match: { status: 'completed', createdAt: { $gte: thirtyDaysAgo } } },
+        {
+          $group: {
+            _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+            revenue: { $sum: '$amount' }
+          }
+        }
+      ])
+    ]);
+
+    // Create maps for quick lookup
+    const companiesMap = new Map(companiesByDay.map(d => [d._id, d.count]));
+    const usersMap = new Map(usersByDay.map(d => [d._id, d.count]));
+    const revenueMap = new Map(revenueByDay.map(d => [d._id, d.revenue]));
+
+    // Build the trends array
+    const monthlyTrends = [];
+    for (let i = 29; i >= 0; i--) {
+      const dayDate = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+      const dateStr = dayDate.toISOString().split('T')[0];
 
       monthlyTrends.push({
         day: dayDate.getDate(),
         month: dayDate.toLocaleString('default', { month: 'short' }),
-        date: dayDate.toISOString().split('T')[0],
-        companies: companiesCount,
-        users: usersCount,
-        revenue: Math.round(dailyRevenue)
+        date: dateStr,
+        companies: companiesMap.get(dateStr) || 0,
+        users: usersMap.get(dateStr) || 0,
+        revenue: Math.round(revenueMap.get(dateStr) || 0)
       });
     }
 
     console.log('✅ Monthly trends generated:', monthlyTrends.length, 'days');
-    console.log('✅ Monthly trends:', monthlyTrends);
     res.json({
       success: true,
       data: monthlyTrends
